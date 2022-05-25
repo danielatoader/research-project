@@ -1,8 +1,6 @@
 import os
-import string
 import subprocess
 import fnmatch
-import sys
 
 class ExtractMetrics:
     """ Class that extracts metrics from projects under /benchmark/projects """
