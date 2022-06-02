@@ -5,6 +5,7 @@ import pandas as pd
 import functools as ft
 from scipy.stats import wilcoxon
 import matplotlib.pyplot as plt
+from VD_A import VD_A
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -35,9 +36,9 @@ class ProcessEvoSuiteData:
         # Compute differences between BRANCH;WEAKMUTATION and BRANCH
         res_medians = pd.read_csv("medians.csv")
         res_medians.to_csv('res_medians.csv')
-        return
+        return res_medians
 
-    def run_statistical_tests(self, output_csv, search_budget, compared_function='branch'):
+    def get_significant_classes_stats(self, output_csv, search_budget, compared_function='branch'):
         res = pd.read_csv(output_csv)
         configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
 
@@ -55,11 +56,11 @@ class ProcessEvoSuiteData:
 
         weak_classes = dict()
         for name, group in weak_groups:
-            weak_classes[name] = np.array(group)
+            weak_classes[name] = group.astype(float).to_numpy()
 
         compared_func_classes = dict()
         for name, group in compared_func_groups:
-            compared_func_classes[name] = np.array(group)
+            compared_func_classes[name] = group.astype(float).to_numpy()
 
         # If there are less than 10 runs for a class, pad the branch coverage with 0 
         def pad(val1, val2):
@@ -71,61 +72,42 @@ class ProcessEvoSuiteData:
                 return val1, np.pad(val2, [(0, val1.shape[0]-val2.shape[0])])
 
         # Calculate statistical significance per class
+        # Apply the Wilcoxon test for (weak_classes, compared_classes) per batch of 10 runs
+        # Apply A. Vargha and H. D. Delaney. per batch
+        # Filter out non-significant classes and classes with less than 'large' effect size
         class_stats = dict()
         for ((key1, val1), (key2, val2)) in zip(weak_classes.items(), compared_func_classes.items()):
             val1, val2 = pad(val1, val2)
-            stats, p = (-2,-2) if (np.sum(np.subtract(val1, val2)) == 0) else wilcoxon(val1, val2)
-            class_stats[key1[0]] = p
+            stats_p = (-2,-2) if (np.sum(np.subtract(val1, val2)) == 0) else wilcoxon(val1, val2)
+            vd = VD_A(val1.tolist(), val2.tolist())
+            class_stats[key1[0]] = (stats_p, vd)
             # print(str(key1) + str(val1) + ", "+ str(key2) + str(val2) + " HAS P VALUE OF: " + str(p))
 
         significant_class_stats = dict()
-        for (key, pval) in class_stats.items():
-            if (pval > -2 and pval < 0.05):
-                significant_class_stats[key] = pval 
-            
-        statistical_sign_nclasses_60 = len(significant_class_stats)
-        cl_stats_len = (len(class_stats))
+        for (key, ((stats, p), vd)) in class_stats.items():
+            if (p > -2 and p < 0.05):
+                significant_class_stats[key] = (stats, p, vd) 
         
-        return statistical_sign_nclasses_60, cl_stats_len
-
-    def plot_stats(self):
-
-        data = ProcessEvoSuiteData()
-        res_dict = {}
-        res_dict["results60"] = data.calculate_medians60()
-        res_dict["stats60"] = data.run_statistical_tests("res_data/results-60.csv", 60)
-        res_dict["stats180"] = data.run_statistical_tests("res_data/results-180.csv", 180)
-        res_dict["stats300"] = data.run_statistical_tests("res_data/results-300.csv", 300)
-
-        res_dict["stats60_default"] = data.run_statistical_tests("res_data/results-60.csv", 60, 'default')
-        res_dict["stats180_defaults"] = data.run_statistical_tests("res_data/results-180.csv", 180, 'default')
-        res_dict["stats300_defaults"] = data.run_statistical_tests("res_data/results-300.csv", 300, 'default')
-
-        # x axis
-        print(res_dict)
-
-        height = [res_dict["stats60_default"][1] - res_dict["stats60_default"][0], res_dict["stats60_default"][0], res_dict["stats180_defaults"][1] - res_dict["stats180_defaults"][0], res_dict["stats180_defaults"][0], res_dict["stats300_defaults"][1] - res_dict["stats300_defaults"][0], res_dict["stats300_defaults"][0]])
-
-        # corresponding y axis values
-        bars = [60,60,180,180,300,300]
+        # Return statistically significant class stats & all classes stats (stats = p-values)
+        return significant_class_stats, class_stats
         
-        # create a dataset
+
+    def plot_stats(self, height, bars, comparison):
+        
+        # Create a dataset
         x_pos = np.arange(len(bars))
 
         # Create bars
         plt.bar(x_pos, height, color=['black', 'black', 'purple', 'purple', 'blue', 'blue'])
 
-        # naming the x axis
-        plt.xlabel('Number of non-statistically & statistically significant classes')
-        # naming the y axis
+        # Name the x axis and the y axis and give title to whole graph
+        plt.xlabel('Number of non-statistically (1st bar) & statistically significant (2nd bar) classes per search budget (60, 180, 300)')
         plt.ylabel('Time budget')
-        
-        # giving a title to my graph
-        plt.title('Number of statistically significant classes per time budget')
+        plt.title('Number of statistically significant classes per time budget: ' + str(comparison))
 
         # Create names on the x-axis
         plt.xticks(x_pos, bars)
-
+        
         plt.show()
 
     def get_ck_metrics(self):
@@ -135,19 +117,40 @@ class ProcessEvoSuiteData:
         class_metrics = class_metrics.iloc[:, 1:]
         return class_metrics
     
+    def get_matching_classes_metrics(self, output_csv, search_budget):
+        """Matches what the ck tool measured on the SF110 with the classes in EvoSuite output files."""
+        
+        class_metrics = data.get_ck_metrics()
+
+        # Features are the metrics themselves: cbo, loc, etc.
+        features = np.array(class_metrics.columns.values)[2:]
+
+        res = pd.read_csv(output_csv)
+        configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
+
+        # Sort by configuration
+        res = res.loc[:,['TARGET_CLASS', 'configuration_id', 'project.id', 'BranchCoverage']]
+        result = res[res.apply(lambda row : row["configuration_id"] in configuration_ids, axis=1)]
+
+        # Match classes from ck tool result with classes in res_data (EvoSuite's output)
+        matching_classes = class_metrics[class_metrics["class"].isin(result["TARGET_CLASS"])]
+
+        # TODO check if the other way around is the same and remove potential duplicates
+        # match_branch = result[result["TARGET_CLASS"].isin(class_metrics["class"])]
+
+        return matching_classes   
+    
 
 if __name__ == '__main__':
     data = ProcessEvoSuiteData()
     res_dict = {}
     res_dict["results60"] = data.calculate_medians60()
-    res_dict["stats60"] = data.run_statistical_tests("res_data/results-60.csv", 60)
-    res_dict["stats180"] = data.run_statistical_tests("res_data/results-180.csv", 180)
-    res_dict["stats300"] = data.run_statistical_tests("res_data/results-300.csv", 300)
+    res_dict["stats60"] = data.get_significant_classes_stats("res_data/results-60.csv", 60)
+    res_dict["stats180"] = data.get_significant_classes_stats("res_data/results-180.csv", 180)
+    res_dict["stats300"] = data.get_significant_classes_stats("res_data/results-300.csv", 300)
 
-    res_dict["stats60_default"] = data.run_statistical_tests("res_data/results-60.csv", 60, 'default')
-    res_dict["stats180_defaults"] = data.run_statistical_tests("res_data/results-180.csv", 180, 'default')
-    res_dict["stats300_defaults"] = data.run_statistical_tests("res_data/results-300.csv", 300, 'default')
+    res_dict["stats60_default"] = data.get_significant_classes_stats("res_data/results-60.csv", 60, 'default')
+    res_dict["stats180_defaults"] = data.get_significant_classes_stats("res_data/results-180.csv", 180, 'default')
+    res_dict["stats300_defaults"] = data.get_significant_classes_stats("res_data/results-300.csv", 300, 'default')
 
     print(res_dict)
-
-    data.plot_stats([res_dict["stats60_default"][1] - res_dict["stats60_default"][0], res_dict["stats60_default"][0], res_dict["stats180_defaults"][1] - res_dict["stats180_defaults"][0], res_dict["stats180_defaults"][0], res_dict["stats300_defaults"][1] - res_dict["stats300_defaults"][0], res_dict["stats300_defaults"][0]])
