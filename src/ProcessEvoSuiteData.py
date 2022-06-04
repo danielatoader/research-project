@@ -18,15 +18,16 @@ class ProcessEvoSuiteData:
     def print_name(self):
         os.system(f"echo The name is: {self.name}")
 
-    def calculate_medians60(self):
-        """ Extract results from the EvoSuite results csv files with time bugdet 60. """
+    def calculate_medians(self, search_budget):
+        """ Extract results from the EvoSuite results csv files with given search bugdet. """
 
         # Read EvoSuite results
-        res60 = pd.read_csv("res_data/results-60.csv")
-        configuration_ids = ['weak_60', 'branch_60', 'default_60']
+        coverage_res_filename = 'res_data/results-' + str(search_budget) + '.csv'
+        res_search_b = pd.read_csv(coverage_res_filename)
+        configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
         
         # Sort by configuration
-        res = res60.loc[:,['TARGET_CLASS', 'configuration_id', 'project.id', 'BranchCoverage']]
+        res = res_search_b.loc[:,['TARGET_CLASS', 'configuration_id', 'project.id', 'BranchCoverage']]
         result = res[res.apply(lambda row : row["configuration_id"] in configuration_ids, axis=1)]
 
         # Take medians of the 10 runs of EvoSuite per class
@@ -38,7 +39,7 @@ class ProcessEvoSuiteData:
         res_medians.to_csv('res_medians.csv')
         return res_medians
 
-    def get_significant_classes_stats(self, output_csv, search_budget, compared_function='branch'):
+    def get_significant_classes_stats(self, output_csv, search_budget, compared_function):
         res = pd.read_csv(output_csv)
         configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
 
@@ -50,14 +51,16 @@ class ProcessEvoSuiteData:
         weak_result = result.loc[result['configuration_id'] == 'weak_' + str(search_budget)]
         weak_groups = weak_result.groupby(['TARGET_CLASS', 'configuration_id', 'project.id'])['BranchCoverage']
 
-        # "branch" groups
+        # "compared" groups
         compared_func_result = result.loc[result['configuration_id'] == str(compared_function) + '_' + str(search_budget)]
         compared_func_groups = compared_func_result.groupby(['TARGET_CLASS', 'configuration_id', 'project.id'])['BranchCoverage']
 
+        # Create a dictionary with the 10 runs per class and the resulting branch coverage for the weak + branch fitness function
         weak_classes = dict()
         for name, group in weak_groups:
             weak_classes[name] = group.astype(float).to_numpy()
 
+        # Create a dictionary with the 10 runs per class and the resulting branch coverage for the compared fitness function
         compared_func_classes = dict()
         for name, group in compared_func_groups:
             compared_func_classes[name] = group.astype(float).to_numpy()
@@ -85,30 +88,11 @@ class ProcessEvoSuiteData:
 
         significant_class_stats = dict()
         for (key, ((stats, p), vd)) in class_stats.items():
-            if (p > -2 and p < 0.05):
-                significant_class_stats[key] = (stats, p, vd) 
+            if (p > -2 and p < 0.05 and vd[1] == 'large'):
+                significant_class_stats[key] = ((stats, p), vd) 
         
         # Return statistically significant class stats & all classes stats (stats = p-values)
         return significant_class_stats, class_stats
-        
-
-    def plot_stats(self, height, bars, comparison):
-        
-        # Create a dataset
-        x_pos = np.arange(len(bars))
-
-        # Create bars
-        plt.bar(x_pos, height, color=['black', 'black', 'purple', 'purple', 'blue', 'blue'])
-
-        # Name the x axis and the y axis and give title to whole graph
-        plt.xlabel('Number of non-statistically (1st bar) & statistically significant (2nd bar) classes per search budget (60, 180, 300)')
-        plt.ylabel('Time budget')
-        plt.title('Number of statistically significant classes per time budget: ' + str(comparison))
-
-        # Create names on the x-axis
-        plt.xticks(x_pos, bars)
-        
-        plt.show()
 
     def get_ck_metrics(self):
         """ Will be used as features for the model. """
@@ -118,9 +102,9 @@ class ProcessEvoSuiteData:
         return class_metrics
     
     def get_matching_classes_metrics(self, output_csv, search_budget):
-        """Matches what the ck tool measured on the SF110 with the classes in EvoSuite output files."""
+        """ Matches what the ck tool measured on the SF110 with the classes in EvoSuite output files. """
         
-        class_metrics = data.get_ck_metrics()
+        class_metrics = self.get_ck_metrics()
 
         # Features are the metrics themselves: cbo, loc, etc.
         features = np.array(class_metrics.columns.values)[2:]
@@ -133,24 +117,23 @@ class ProcessEvoSuiteData:
         result = res[res.apply(lambda row : row["configuration_id"] in configuration_ids, axis=1)]
 
         # Match classes from ck tool result with classes in res_data (EvoSuite's output)
-        matching_classes = class_metrics[class_metrics["class"].isin(result["TARGET_CLASS"])]
-
-        # TODO check if the other way around is the same and remove potential duplicates
-        # match_branch = result[result["TARGET_CLASS"].isin(class_metrics["class"])]
-
+        matching_classes = class_metrics[class_metrics["class"].isin(result["TARGET_CLASS"])].drop_duplicates()
+        # print(len(matching_classes))
         return matching_classes   
     
+# if __name__ == '__main__':
+#     data = ProcessEvoSuiteData()
+#     res_dict = {}
+#     res_dict["results60"] = data.calculate_medians60()
+#     res_dict["stats60"] = data.get_significant_classes_stats("res_data/results-60.csv", 60)
+#     res_dict["stats180"] = data.get_significant_classes_stats("res_data/results-180.csv", 180)
+#     res_dict["stats300"] = data.get_significant_classes_stats("res_data/results-300.csv", 300)
 
-if __name__ == '__main__':
-    data = ProcessEvoSuiteData()
-    res_dict = {}
-    res_dict["results60"] = data.calculate_medians60()
-    res_dict["stats60"] = data.get_significant_classes_stats("res_data/results-60.csv", 60)
-    res_dict["stats180"] = data.get_significant_classes_stats("res_data/results-180.csv", 180)
-    res_dict["stats300"] = data.get_significant_classes_stats("res_data/results-300.csv", 300)
+#     res_dict["stats60_default"] = data.get_significant_classes_stats("res_data/results-60.csv", 60, 'default')
+#     res_dict["stats180_defaults"] = data.get_significant_classes_stats("res_data/results-180.csv", 180, 'default')
+#     res_dict["stats300_defaults"] = data.get_significant_classes_stats("res_data/results-300.csv", 300, 'default')
 
-    res_dict["stats60_default"] = data.get_significant_classes_stats("res_data/results-60.csv", 60, 'default')
-    res_dict["stats180_defaults"] = data.get_significant_classes_stats("res_data/results-180.csv", 180, 'default')
-    res_dict["stats300_defaults"] = data.get_significant_classes_stats("res_data/results-300.csv", 300, 'default')
-
-    print(res_dict)
+    # print(res_dict)
+            
+        # TODO there are classes that do not come from SF110 in the data from supervisors => rerun tool to cover those
+        # then retrain model
