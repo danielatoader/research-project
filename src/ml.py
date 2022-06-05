@@ -5,7 +5,7 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold
 import math
 
-from ProcessEvoSuiteData import ProcessEvoSuiteData
+from process_evosuite_data import ProcessEvoSuiteData
 
 data = ProcessEvoSuiteData()
 
@@ -16,43 +16,51 @@ labels_dict_gl[300] = {'branch_300':0, 'default_300':1, 'weak_300':2}
 
 how_many = 0
 
-def get_significant_classes_matching_metrics(search_budget):
-    """ Get significant classes and their corresponding matching metrics. """
+def get_label(search_budget, class_name, medians, columns_to_group, score_metric, labels_dict=None):
+    """
+    Get the label of a specific sample based on the medians of the score metric.
+    """
+    
+    if (not labels_dict):
+        labels_dict = labels_dict_gl[search_budget]
 
-    significant_classes_stats = {}
-    key_budget = 'stats' + str(search_budget)
+    global how_many
+    class_column = columns_to_group[0]
+    config_column = columns_to_group[1]
 
-    # Contains the coverage results per class from EvoSuite (e.g. coverage_res_filename = "res_data/results-60.csv")
-    coverage_res_filename = 'res_data/results-' + str(search_budget) + '.csv'
+    # Get matching rows
+    selected_rows = medians.loc[medians[class_column]==class_name]
+    assert selected_rows.shape[0] == 3, f"Expected 3 selected rows, but got {selected_rows[0]}"
+    
+    # Get the maximum branch covreage of the three data points
+    max_coverage = selected_rows.max(numeric_only=True)[score_metric]
+    
+    # Select the configuration_id by the maximum branch coverage
+    # TODO: decide on a policy for equality
+    # A lot of the datapoints have equal values, so this is an extremely important decision
+    # Currently: just pick the last one
+    max_rows = selected_rows.loc[selected_rows[score_metric]==max_coverage]
+    
+    # Count the number of labels that have non-unique maximums
+    if max_rows.shape[0] > 1:
+        how_many += 1
+        
+    # Select the first row of the maximum ones
+    max_config_id = max_rows.iloc[-1][config_column]
+    
+    assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
+    return labels_dict[max_config_id]
 
-    # Contains statistically significant classes at [0] and all classes at [1]
-    # res_dict['stats60'][0].items() contains pairs of type (class_name, p-value)
-    significant_classes_stats[str(key_budget + '_branch')] = data.get_significant_classes_stats(coverage_res_filename, search_budget, 'branch')
-    significant_classes_stats[str(key_budget + '_default')] = data.get_significant_classes_stats(coverage_res_filename, search_budget, 'default')
+def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None):
+    """
+    Gets the dataset and the taget labels to further train the ML models.
+    """
 
-    matching_classes_metrics = {}
-    signif_matched_metrics = {}
-    key_class_metrics = 'class_metrics' + str(search_budget)
-
-    # Contains the dictionary with matched metrics (for classes from EvoSuite output and CK tool)
-    # Should probably be reindexed (or ignore index)
-    matching_classes_metrics[key_class_metrics] = data.get_matching_classes_metrics(coverage_res_filename, search_budget)
-
-    # Contains names of statistically significant classes
-    significant_classes = list(set(list(significant_classes_stats[str(key_budget + '_branch')][0].keys()) + list(significant_classes_stats[str(key_budget + '_branch')][0].keys())))
-
-    # Matched metrics for the significant classes
-    matched_metrics = matching_classes_metrics[key_class_metrics]
-    signif_matched_metrics[key_class_metrics] = matched_metrics[matched_metrics.apply(lambda row : row['class'] in significant_classes, axis=1)]
-
-    return signif_matched_metrics
-
-def get_X_y(search_budget):
-    """ Gets the dataset and the taget labels to further train the ML models. """
-
+    medians_columns = [columns_to_group[0], columns_to_group[1], score_metric]
+    class_column = columns_to_group[0]
     metrics_budget = 'class_metrics' + str(search_budget)
-    signif_matched_metrics = get_significant_classes_matching_metrics(search_budget)
-    medians = data.calculate_medians(search_budget)[['TARGET_CLASS', 'configuration_id', 'BranchCoverage']]
+    signif_matched_metrics = data.get_significant_classes_matching_metrics(search_budget, columns_to_group, score_metric, score_metric_filename)
+    medians = data.calculate_medians(search_budget, columns_to_group, score_metric, score_metric_filename)[medians_columns]
 
     X = []
     classes = []
@@ -60,7 +68,7 @@ def get_X_y(search_budget):
     # Loop through class names
     for cls in signif_matched_metrics[metrics_budget]['class'].items():
         # Select only those classes for which all 3 configuration data points are available
-        if medians.loc[medians['TARGET_CLASS']==cls[1]].shape[0] != 3:
+        if medians.loc[medians[class_column]==cls[1]].shape[0] != 3:
             continue
         X.append([])
         
@@ -83,7 +91,7 @@ def get_X_y(search_budget):
 
     y = []
     for cl in classes:
-        y.append(get_label(search_budget, cl, medians))
+        y.append(get_label(search_budget, cl, medians, columns_to_group, score_metric, labels_dict))
     # y = list(map(get_label(classes)))
     
     # print(f"Non-unique maximums for {how_many} out of {len(X)} entries")
@@ -92,43 +100,25 @@ def get_X_y(search_budget):
 
     return X, y
 
-def get_label(search_budget, class_name, medians, labels_dict=None):
-    if (not labels_dict):
-        labels_dict = labels_dict_gl[search_budget]
+def extract_features(X):
+    X_extr = X
+    return X_extr
 
-    global how_many
-    # Get matching rows
-    selected_rows = medians.loc[medians['TARGET_CLASS']==class_name]
-    assert selected_rows.shape[0] == 3, f"Expected 3 selected rows, but got {selected_rows[0]}"
-    
-    # Get the maximum branch covreage of the three data points
-    max_coverage = selected_rows.max(numeric_only=True)['BranchCoverage']
-    
-    # Select the configuration_id by the maximum branch coverage
-    # TODO: decide on a policy for equality
-    # A lot of the datapoints have equal values, so this is an extremely important decision
-    # Currently: just pick the last one
-    max_rows = selected_rows.loc[selected_rows['BranchCoverage']==max_coverage]
-    
-    # Count the number of labels that have non-unique maximums
-    if max_rows.shape[0] > 1:
-        how_many += 1
-        
-    # Select the first row of the maximum ones
-    max_config_id = max_rows.iloc[-1]['configuration_id']
-    
-    assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
-    return labels_dict[max_config_id]
-
-
-def run_KFold(search_budgets):
-    """ Run KFold cross validation using X, y and the chosen models. """
+def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
+    """
+    Run KFold cross validation using X, y and the chosen models.
+    """
 
     f1s = dict()
     for search_budget in search_budgets:
-        X, y = get_X_y(search_budget)
+
+        # Get samples and their labels
+        X, y = get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
         X = np.array(X)
         y = np.array(y)
+
+        # Perform feature extraction
+        # X_fextract = extract_features(X)
 
         kf = KFold(n_splits=20, random_state=42, shuffle=True)
         f1s_dt = []
@@ -154,7 +144,11 @@ def run_KFold(search_budgets):
     return f1s
 
 if __name__ == '__main__':
-    f1s = run_KFold([60, 180, 300])
-    print( 'DT: ' + str(np.average(f1s[60][0])) + ' SVC: ' + str(np.average(f1s[60][1])))
-    print( 'DT: ' + str(np.average(f1s[180][0])) + ' SVC: ' + str(np.average(f1s[180][1])))
-    print( 'DT: ' + str(np.average(f1s[300][0])) + ' SVC: ' + str(np.average(f1s[300][1])))
+    f1s_coverage = run_KFold(search_budgets=[60, 180, 300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
+    print( 'DT: ' + str(np.average(f1s_coverage[60][0])) + ' SVC: ' + str(np.average(f1s_coverage[60][1])))
+    print( 'DT: ' + str(np.average(f1s_coverage[180][0])) + ' SVC: ' + str(np.average(f1s_coverage[180][1])))
+    print( 'DT: ' + str(np.average(f1s_coverage[300][0])) + ' SVC: ' + str(np.average(f1s_coverage[300][1])))
+
+    f1s_mutation_score = run_KFold(search_budgets=[60], columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
+    print( 'DT_mutation: ' + str(np.average(f1s_mutation_score[60][0])) + ' SVC_mutation: ' + str(np.average(f1s_mutation_score[60][1])))
+

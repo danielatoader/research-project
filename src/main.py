@@ -1,4 +1,4 @@
-from ExtractMetrics import ExtractMetrics
+from extract_metrics import ExtractMetrics
 
 if __name__ == '__main__':
 
