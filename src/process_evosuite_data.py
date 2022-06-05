@@ -1,16 +1,15 @@
 import os
-from statistics import median
 import numpy as np
 import pandas as pd
-import functools as ft
 from scipy.stats import wilcoxon
-import matplotlib.pyplot as plt
 from VD_A import VD_A
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
 class ProcessEvoSuiteData:
-    """ Class that processes data from EvoSuite. """
+    """
+    Class that processes data from EvoSuite.
+    """
 
     def __init__(self):
         self.name = "ProcessEvoSuiteData"
@@ -19,7 +18,9 @@ class ProcessEvoSuiteData:
         os.system(f"echo The name is: {self.name}")
 
     def calculate_medians(self, search_budget, columns_to_group, score_metric, score_metric_filename):
-        """ Extract results from the EvoSuite results csv files with given search bugdet. """
+        """
+        Extract results from the EvoSuite results csv files with given search bugdet.
+        """
 
         # Read EvoSuite results
         if (not ('mutation' in score_metric_filename)):
@@ -28,7 +29,10 @@ class ProcessEvoSuiteData:
             score_metric_filename = str(score_metric_filename) + str(search_budget) + '.csv'
             
         res_search_b = pd.read_csv(score_metric_filename)
-        configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
+        configuration_ids = [
+            'weak_' + str(search_budget),
+            'branch_' + str(search_budget),
+            'default_' + str(search_budget)]
         all_columns = columns_to_group + [score_metric]
 
         # Configuration column name is the second in the columns_to_group list
@@ -45,14 +49,19 @@ class ProcessEvoSuiteData:
 
         # Compute differences between BRANCH;WEAKMUTATION and BRANCH
         res_medians = pd.read_csv(medians_filename)
-        # res_medians.to_csv('res_medians_' + score_metric_filename + '.csv')
+        
         return res_medians
 
     def get_significant_classes_stats(self, output_csv, search_budget, compared_function, columns_to_group, score_metric):
-        """ Get Wilcoxon and Vargha-Delaney statistics for all classes and return both significant and all classes along with their stats. """
+        """
+        Get Wilcoxon and Vargha-Delaney statistics for all classes and return both significant and all classes along with their stats.
+        """
 
         res = pd.read_csv(output_csv)
-        configuration_ids = ['weak_' + str(search_budget), 'branch_' + str(search_budget), 'default_' + str(search_budget)]
+        configuration_ids = [
+            'weak_' + str(search_budget),
+            'branch_' + str(search_budget),
+            'default_' + str(search_budget)]
         all_columns = columns_to_group + [score_metric]
 
         # Configuration column name is the second in the columns_to_group list
@@ -94,7 +103,9 @@ class ProcessEvoSuiteData:
         # Apply A. Vargha and H. D. Delaney. per batch
         # Filter out non-significant classes and classes with less than 'large' effect size
         class_stats = dict()
+
         for ((key1, val1), (key2, val2)) in zip(weak_classes.items(), compared_func_classes.items()):
+
             val1, val2 = pad(val1, val2)
             stats_p = (-2,-2) if (np.sum(np.subtract(val1, val2)) == 0) else wilcoxon(val1, val2)
             vd = VD_A(val1.tolist(), val2.tolist())
@@ -102,6 +113,7 @@ class ProcessEvoSuiteData:
             # print(str(key1) + str(val1) + ", "+ str(key2) + str(val2) + " HAS P VALUE OF: " + str(p))
 
         significant_class_stats = dict()
+
         for (key, ((stats, p), vd)) in class_stats.items():
             if (p > -2 and p < 0.05 and vd[1] == 'large'):
                 significant_class_stats[key] = ((stats, p), vd) 
@@ -110,14 +122,18 @@ class ProcessEvoSuiteData:
         return significant_class_stats, class_stats
 
     def get_ck_metrics(self):
-        """ Will be used as features for the model. """
+        """
+        Will be used as features for the model.
+        """
 
         class_metrics = pd.read_csv("ck_data/class.csv")
         class_metrics = class_metrics.iloc[:, 1:]
         return class_metrics
     
     def get_matching_classes_metrics(self, output_csv, search_budget, columns_to_group, score_metric):
-        """ Matches what the ck tool measured on the SF110 with the classes in EvoSuite output files. """
+        """
+        Matches what the ck tool measured on the SF110 with the classes in EvoSuite output files.
+        """
         
         class_metrics = self.get_ck_metrics()
 
@@ -164,8 +180,19 @@ class ProcessEvoSuiteData:
 
         # Contains statistically significant classes at [0] and all classes at [1]
         # res_dict['stats60'][0].items() contains pairs of type (class_name, p-value)
-        significant_classes_stats[str(key_budget + '_branch')] = self.get_significant_classes_stats(score_metric_filename, search_budget, 'branch', columns_to_group, score_metric)
-        significant_classes_stats[str(key_budget + '_default')] = self.get_significant_classes_stats(score_metric_filename, search_budget, 'default', columns_to_group, score_metric)
+        significant_classes_stats[str(key_budget + '_branch')] = self.get_significant_classes_stats(
+            score_metric_filename,
+            search_budget,
+            'branch',
+            columns_to_group,
+            score_metric)
+
+        significant_classes_stats[str(key_budget + '_default')] = self.get_significant_classes_stats(
+            score_metric_filename,
+            search_budget,
+            'default',
+            columns_to_group,
+            score_metric)
 
         matching_classes_metrics = {}
         signif_matched_metrics = {}
@@ -173,7 +200,11 @@ class ProcessEvoSuiteData:
 
         # Contains the dictionary with matched metrics (for classes from EvoSuite output and CK tool)
         # Should probably be reindexed (or ignore index)
-        matching_classes_metrics[key_class_metrics] = self.get_matching_classes_metrics(score_metric_filename, search_budget, columns_to_group, score_metric)
+        matching_classes_metrics[key_class_metrics] = self.get_matching_classes_metrics(
+            score_metric_filename,
+            search_budget,
+            columns_to_group,
+            score_metric)
 
         # Contains names of statistically significant classes
         significant_classes = list(set(list(significant_classes_stats[str(key_budget + '_branch')][0].keys()) + list(significant_classes_stats[str(key_budget + '_branch')][0].keys())))

@@ -1,11 +1,16 @@
 import numpy as np
 from sklearn import tree
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestClassifier
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
 import math
 
 from process_evosuite_data import ProcessEvoSuiteData
+from feature_selection_extraction import select_features
 
 data = ProcessEvoSuiteData()
 
@@ -49,6 +54,7 @@ def get_label(search_budget, class_name, medians, columns_to_group, score_metric
     max_config_id = max_rows.iloc[-1][config_column]
     
     assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
+
     return labels_dict[max_config_id]
 
 def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None):
@@ -59,11 +65,18 @@ def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename
     medians_columns = [columns_to_group[0], columns_to_group[1], score_metric]
     class_column = columns_to_group[0]
     metrics_budget = 'class_metrics' + str(search_budget)
-    signif_matched_metrics = data.get_significant_classes_matching_metrics(search_budget, columns_to_group, score_metric, score_metric_filename)
+
+    signif_matched_metrics = data.get_significant_classes_matching_metrics(
+        search_budget,
+        columns_to_group,
+        score_metric,
+        score_metric_filename)
+
     medians = data.calculate_medians(search_budget, columns_to_group, score_metric, score_metric_filename)[medians_columns]
 
     X = []
     classes = []
+    features = signif_matched_metrics[metrics_budget].keys()[2:]
 
     # Loop through class names
     for cls in signif_matched_metrics[metrics_budget]['class'].items():
@@ -98,11 +111,8 @@ def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename
     # print(y)
     assert len(y) == len(X), f"X and y should have the same number of entries, but they have {len(X)} and {len(y)}, respectively."
 
-    return X, y
+    return X, y, features
 
-def extract_features(X):
-    X_extr = X
-    return X_extr
 
 def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
     """
@@ -113,42 +123,61 @@ def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'co
     for search_budget in search_budgets:
 
         # Get samples and their labels
-        X, y = get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
+        X, y, features = get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
         X = np.array(X)
         y = np.array(y)
 
-        # Perform feature extraction
-        # X_fextract = extract_features(X)
+        # Apply dataset balancing techniques
+        over_sampler = RandomOverSampler(random_state=42)
+        X_res, y_res = over_sampler.fit_resample(X, y)
+        # under_sampler = RandomUnderSampler(random_state=42)
+        # X_res, y_res = under_sampler.fit_resample(X, y)
 
-        kf = KFold(n_splits=20, random_state=42, shuffle=True)
-        f1s_dt = []
+        kf = KFold(n_splits=10, random_state=42, shuffle=True)
         f1s_svc = []
-        for train_index, test_index in kf.split(X):
+        f1s_dt = []
+        f1s_rf = []
+        f1s_lr = []
+
+        for train_index, test_index in kf.split(X_res):
             # Split the data
-            X_train, X_test = X[train_index], X[test_index]
-            y_train, y_test = y[train_index], y[test_index]
+            X_train, X_test = X_res[train_index], X_res[test_index]
+            y_train, y_test = y_res[train_index], y_res[test_index]            
+
+            # Feature selection
+            X_train, X_test = select_features(X_train, X_test, features)
             
-            # Train svc
+            # Train SVC
             clf = SVC()
             clf.set_params(kernel='rbf').fit(X_train, y_train)
             y_pred = clf.predict(X_test)
             f1s_svc.append(f1_score(y_pred, y_test, average='weighted'))
             
-            # Train decision tree
+            # Train Decision Tree
             decision_tree = tree.DecisionTreeClassifier(random_state=456).fit(X_train, y_train)
             y_pred = decision_tree.predict(X_test)
             f1s_dt.append(f1_score(y_pred, y_test, average='weighted'))
 
-        f1s[search_budget] = (f1s_dt, f1s_svc)
+            # Train Random Forest classifier
+            random_forest = RandomForestClassifier(n_estimators = 100).fit(X_train, y_train)
+            y_pred = random_forest.predict(X_test)
+            f1s_rf.append(f1_score(y_pred, y_test, average='weighted'))
+
+            # Train a Logistic Regression classifier
+            logistic_regression = LogisticRegression(random_state=0, max_iter=300).fit(X_train, y_train)
+            y_pred = logistic_regression.predict(X_test)
+            f1s_lr.append(f1_score(y_pred, y_test, average='weighted'))
+
+        f1s[search_budget] = (f1s_dt, f1s_svc, f1s_rf, f1s_lr)
 
     return f1s
 
 if __name__ == '__main__':
     f1s_coverage = run_KFold(search_budgets=[60, 180, 300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
-    print( 'DT: ' + str(np.average(f1s_coverage[60][0])) + ' SVC: ' + str(np.average(f1s_coverage[60][1])))
-    print( 'DT: ' + str(np.average(f1s_coverage[180][0])) + ' SVC: ' + str(np.average(f1s_coverage[180][1])))
-    print( 'DT: ' + str(np.average(f1s_coverage[300][0])) + ' SVC: ' + str(np.average(f1s_coverage[300][1])))
+    print( 'DT: ' + str(np.average(f1s_coverage[60][0])) + ' SVC: ' + str(np.average(f1s_coverage[60][1])) + ' RF: ' + str(np.average(f1s_coverage[60][2])) + ' LR: ' + str(np.average(f1s_coverage[60][3])))
+    print( 'DT: ' + str(np.average(f1s_coverage[180][0])) + ' SVC: ' + str(np.average(f1s_coverage[180][1])) + ' RF: ' + str(np.average(f1s_coverage[180][2])) + ' LR: ' + str(np.average(f1s_coverage[180][3])))
+    print( 'DT: ' + str(np.average(f1s_coverage[300][0])) + ' SVC: ' + str(np.average(f1s_coverage[300][1])) + ' RF: ' + str(np.average(f1s_coverage[300][2])) + ' LR: ' + str(np.average(f1s_coverage[300][3])))
 
     f1s_mutation_score = run_KFold(search_budgets=[60], columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
-    print( 'DT_mutation: ' + str(np.average(f1s_mutation_score[60][0])) + ' SVC_mutation: ' + str(np.average(f1s_mutation_score[60][1])))
+    print( 'DT_mutation: ' + str(np.average(f1s_mutation_score[60][0])) + ' SVC_mutation: ' + str(np.average(f1s_mutation_score[60][1])) + ' RF: ' + str(np.average(f1s_mutation_score[60][2])) + ' LR: ' + str(np.average(f1s_mutation_score[60][3])))
 
