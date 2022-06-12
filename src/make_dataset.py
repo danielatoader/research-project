@@ -1,10 +1,7 @@
+import json
+import os
 import numpy as np
-from sklearn import tree
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.metrics import f1_score
-from sklearn.model_selection import KFold
-from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
 from imblearn.over_sampling import RandomOverSampler
 from imblearn.under_sampling import RandomUnderSampler
 import math
@@ -57,7 +54,7 @@ def get_label(search_budget, class_name, medians, columns_to_group, score_metric
 
     return labels_dict[max_config_id]
 
-def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None):
+def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None, read_from=None):
     """
     Gets the dataset and the taget labels to further train the ML models.
     """
@@ -65,18 +62,45 @@ def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename
     medians_columns = [columns_to_group[0], columns_to_group[1], score_metric]
     class_column = columns_to_group[0]
     metrics_budget = 'class_metrics' + str(search_budget)
+    from_col = 2
 
-    signif_matched_metrics = data.get_significant_classes_matching_metrics(
-        search_budget,
-        columns_to_group,
-        score_metric,
-        score_metric_filename)
+    if (read_from):
+        signif_matched_metrics = pd.read_csv(read_from)
+        from_col = 3
+    else:
+        filename_significant_matched_metrics = 'significant_matched_metrics_' + score_metric + '_' + str(search_budget) + '.csv'
+        # filename_significant_matched_metrics = 'significant_matched_metrics_' + score_metric + '_' + str(search_budget) + '.txt'
+  
+        outdir = './significant_metrics_matched/'
+        if not os.path.exists(outdir):
+            os.mkdir(outdir)
+
+        filename_significant_matched_metrics = os.path.join(outdir, filename_significant_matched_metrics)  
+
+        signif_matched_metrics = {}
+        if (os.path.exists(filename_significant_matched_metrics)):
+            signif_matched_metrics1 = pd.read_csv(filename_significant_matched_metrics)
+            # with open(filename_significant_matched_metrics) as json_file:
+                # signif_matched_metrics = json.load(json_file)
+            signif_matched_metrics[metrics_budget] = signif_matched_metrics1
+            from_col = 3
+        else:
+            signif_matched_metrics = data.get_significant_classes_matching_metrics(
+                search_budget,
+                columns_to_group,
+                score_metric,
+                score_metric_filename)
+
+            # with open(filename_significant_matched_metrics, 'w') as file:
+            #     file.write(json.dumps(signif_matched_metrics)) 
+            signif_matched_metrics[metrics_budget].to_csv(filename_significant_matched_metrics)  
 
     medians = data.calculate_medians(search_budget, columns_to_group, score_metric, score_metric_filename)[medians_columns]
 
     X = []
     classes = []
-    features = signif_matched_metrics[metrics_budget].keys()[2:]
+    # from_col = 2
+    features = signif_matched_metrics[metrics_budget].keys()[from_col:]
 
     # Loop through class names
     for cls in signif_matched_metrics[metrics_budget]['class'].items():
@@ -90,7 +114,7 @@ def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename
         classes.append(cls[1])
         
         # [2:] to skip the name and type
-        for feature in signif_matched_metrics[metrics_budget].keys()[2:]:
+        for feature in signif_matched_metrics[metrics_budget].keys()[from_col:]:
             
             # X[-1] is the last (current) entry (class)
             # cls[0] is the id of the entry (class)

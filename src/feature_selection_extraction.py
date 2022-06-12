@@ -10,9 +10,10 @@ def select_features(X_train, X_test, features):
     df_train = pd.DataFrame(X_train, columns = features)
     df_test = pd.DataFrame(X_test, columns = features)
     
-    corr_features = correlation(df_train, 0.2)
+    corr_features = correlation(df_train, 0.3)
     selected_features = list(set(features) - set(corr_features))
-    # print(len(set(corr_features)))
+    print('Number of selected features: ' + str(len(set(selected_features))))
+    print(selected_features)
 
     X_train_selected = (df_train.drop(corr_features,axis=1)).to_numpy()
     X_test_selected = (df_test.drop(corr_features,axis=1)).to_numpy()
