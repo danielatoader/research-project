@@ -11,12 +11,14 @@ def select_features(X_train, X_test, features):
     df_test = pd.DataFrame(X_test, columns = features)
     
     corr_features = correlation(df_train, 0.2)
-    print(len(set(corr_features)))
+    selected_features = list(set(features) - set(corr_features))
+    # print(len(set(corr_features)))
 
     X_train_selected = (df_train.drop(corr_features,axis=1)).to_numpy()
     X_test_selected = (df_test.drop(corr_features,axis=1)).to_numpy()
 
-    return X_train_selected, X_test_selected
+    assert (len(selected_features) == (len(features) - len(corr_features)))
+    return X_train_selected, X_test_selected, selected_features
     
 
 # with the following function we can select highly correlated features
