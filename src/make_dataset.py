@@ -12,9 +12,33 @@ from feature_selection_extraction import select_features
 data = ProcessEvoSuiteData()
 
 labels_dict_gl = dict()
-labels_dict_gl[60] = {'branch_60':0, 'default_60':1, 'weak_60':2}
-labels_dict_gl[180] = {'branch_180':0, 'default_180':1, 'weak_180':2}
-labels_dict_gl[300] = {'branch_300':0, 'default_300':1, 'weak_300':2}
+labels_dict_gl[60] = {
+    'branch_60':'branch',
+    'default_60':'default',
+    'weak_60':'bcwm',
+    'eq_branch_60_weak_60':'equivalent_bcwm_branch',
+    'eq_default_60_weak_60':'equivalent_bcwm_default',
+    'eq_branch_60_default_60':'equivalent_branch_default',
+    'eq_all_60':'equivalent_all'
+    }
+labels_dict_gl[180] = {
+    'branch_180':'branch',
+    'default_180':'default',
+    'weak_180':'bcwm',
+    'eq_branch_180_weak_180':'equivalent_bcwm_branch',
+    'eq_default_180_weak_180':'equivalent_bcwm_default',
+    'eq_branch_180_default_180':'equivalent_branch_default',
+    'eq_all_180':'equivalent_all'
+}
+labels_dict_gl[300] = {
+    'branch_300':'branch',
+    'default_300':'fefault',
+    'weak_300':'bcwm',
+    'eq_branch_300_weak_300':'equivalent_bcwm_branch',
+    'eq_default_300_weak_300':'equivalent_bcwm_default',
+    'eq_branch_300_default_300':'equivalent_branch_default',
+    'eq_all_300':'equivalent_all'
+}
 
 how_many = 0
 
@@ -38,21 +62,38 @@ def get_label(search_budget, class_name, medians, columns_to_group, score_metric
     max_coverage = selected_rows.max(numeric_only=True)[score_metric]
     
     # Select the configuration_id by the maximum branch coverage
-    # TODO: decide on a policy for equality
-    # A lot of the datapoints have equal values, so this is an extremely important decision
-    # Currently: just pick the last one
+    # A lot of the datapoints have equal values
+    # And they are assigned equivalent labels based on which values are the same.
     max_rows = selected_rows.loc[selected_rows[score_metric]==max_coverage]
     
     # Count the number of labels that have non-unique maximums
     if max_rows.shape[0] > 1:
         how_many += 1
         
-    # Select the first row of the maximum ones
-    max_config_id = max_rows.iloc[-1][config_column]
-    
-    assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
+    # Select the maximum configuraions id
+    max_config_ids = []
+    label = None
 
-    return labels_dict[max_config_id]
+    # If all 3 are maximum, then retun label 'equivalent_all'
+    if max_rows.shape[0] == 3:
+        label = labels_dict['eq_all_' + str(search_budget)]
+
+    # If there are 2 maximums, return the label corresponding to the 2 max functions
+    # Order in the dataframes is: branch, default, weak
+    elif max_rows.shape[0] == 2:
+        max_config_ids.append(max_rows.iloc[0][config_column])
+        max_config_ids.append(max_rows.iloc[1][config_column])
+        label = labels_dict['eq_' + max_config_ids[0] + '_' + max_config_ids[1]]
+    
+    # If there is one maximum, return that label 
+    elif max_rows.shape[0] == 1:
+        max_config_ids.append(max_rows.iloc[0][config_column])
+        label = labels_dict[max_config_ids[0]]
+
+    for max_config_id in max_config_ids:
+        assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
+
+    return label
 
 def get_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None, read_from=None):
     """
