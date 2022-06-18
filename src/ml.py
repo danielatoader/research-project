@@ -1,18 +1,26 @@
+from six import StringIO
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
+from IPython.display import Image  
+from sklearn.tree import export_graphviz
+import pydotplus
+import json
+from matplotlib import pyplot as plt
 import numpy as np
+import pandas as pd
 from sklearn import tree
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import f1_score
-from sklearn.model_selection import KFold, cross_val_score
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.ensemble import RandomForestClassifier
+import sklearn.feature_selection as fs
+from sklearn.feature_selection import RFECV
 from numpy import mean
-from numpy import std
-# from sklearn.datasets import make_classification
 from sklearn.model_selection import KFold
 from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
 
 from feature_selection_extraction import select_features
 from make_dataset import get_X_y, get_balanced_X_y
@@ -30,6 +38,10 @@ def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'co
         # Also balance data
         X_res, y_res, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
 
+        # bk = fs.SelectKBest()
+        # bk.fit(X_res, y_res)
+        # X_transf = bk.transform(X_res)
+
         kf = KFold(n_splits=10, random_state=42, shuffle=True)
         f1s_svc = []
         f1s_dt = []
@@ -42,7 +54,7 @@ def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'co
             y_train, y_test = y_res[train_index], y_res[test_index]            
 
             # Feature selection
-            X_train, X_test, selected_features = select_features(X_train, X_test, features)
+            # X_train, X_test, selected_features = select_features(X_train, X_test, features)
             
             # Train SVC
             clf = SVC()
@@ -70,125 +82,131 @@ def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'co
 
     return f1s
 
-def double_K_fold(search_budget=60, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
-    # create dataset
-    X, y, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
-    # configure the cross-validation procedure
-    cv_outer = KFold(n_splits=10, shuffle=True, random_state=1)
-    # enumerate splits
-    outer_results = list()
-    for train_ix, test_ix in cv_outer.split(X):
-        # split data
-        X_train, X_test = X[train_ix, :], X[test_ix, :]
-        y_train, y_test = y[train_ix], y[test_ix]
-        
-        # Feature selection
-        X_train, X_test, selected_features = select_features(X_train, X_test, features)
-
-        # configure the cross-validation procedure
-        cv_inner = KFold(n_splits=3, shuffle=True, random_state=1)
-        # define the model
-        model = RandomForestClassifier(random_state=1)
-        # define search space
-        space = dict()
-        space['n_estimators'] = [10, 100, 500]
-        space['max_features'] = [2, 4, 6, 10, 20]
-        # define search
-        search = GridSearchCV(model, space, scoring='f1_weighted', cv=cv_inner, refit=True)
-        # execute search
-        result = search.fit(X_train, y_train)
-        # get the best performing model fit on the whole training set
-        best_model = result.best_estimator_
-        # evaluate model on the hold out dataset
-        yhat = best_model.predict(X_test)
-        # evaluate the model
-        acc = f1_score(y_test, yhat, average='weighted')
-        # store the result
-        outer_results.append(acc)
-        # report progress
-        print('>acc=%.3f, est=%.3f, cfg=%s' % (acc, result.best_score_, result.best_params_))
-        # summarize the estimated performance of the model
-    print('F1-score: %.3f (%.3f)' % (mean(outer_results), std(outer_results)))
-
-
-def auto_KFold(model, space, search_budget=60, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
-    X, y, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
-    # Feature selection
-    X, _, selected_features = select_features(X, X, features)
-    # configure the cross-validation procedure
-    cv_inner = KFold(n_splits=3, shuffle=True, random_state=1)
-
-    # define the model
-    # model = RandomForestClassifier(random_state=1)
-    # define search space
-    # space = dict()
-    # space['n_estimators'] = [10, 100, 500]
-    # space['max_features'] = [2, 4, 6]
-
-    # define search
-    search = GridSearchCV(model, space, scoring='f1_weighted', n_jobs=1, cv=cv_inner, refit=True)
-    # configure the cross-validation procedure
-    cv_outer = KFold(n_splits=10, shuffle=True, random_state=1)
-    # execute the nested cross-validation
-    scores = cross_val_score(search, X, y, scoring='f1_weighted', cv=cv_outer, n_jobs=-1)
-    # report performance
-    print('F1-score: %.3f (%.3f)' % (mean(scores), std(scores)))
-
-def run_KFold_Grid_all_models(search_budget=60, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
-    X, y, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
-    # Feature selection
-    X, _, selected_features = select_features(X, X, features)
-
+def double_K_fold(
+    search_budget=60,
+    columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'],
+    score_metric='BranchCoverage',
+    score_metric_filename='res_data/results-',
+    k=10
+):
     models = []
 
-    models.append(("LogisticRegression",LogisticRegression()))
+    models.append(("RandomForest",RandomForestClassifier()))
     models.append(("SVC",SVC()))
+    models.append(("DecisionTree",tree.DecisionTreeClassifier()))
+    models.append(("LogisticRegression",LogisticRegression()))
     # models.append(("LinearSVC",LinearSVC()))
     # models.append(("KNeighbors",KNeighborsClassifier()))
-    models.append(("DecisionTree",tree.DecisionTreeClassifier()))
-    models.append(("RandomForest",RandomForestClassifier()))
-    # rf2 = RandomForestClassifier(n_estimators=100, criterion='gini',
-                                    # max_depth=10, random_state=0, max_features=None)
-    # models.append(("RandomForest2",rf2))
-    # models.append(("MLPClassifier",MLPClassifier(solver='lbfgs', random_state=0)))
 
+    # create dataset
+    X, y, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
+    
+    # Feature selection
+    bk = fs.SelectKBest(k=k)
+    bk.fit(X, y)
+    X_transf = bk.transform(X)
+    features = [column[0]  for column in zip(features,bk.get_support()) if column[1]]
+    print(features)
+    # features = bk.get_support(indices=True)
+    
     space = dict()
     for (name, model) in models:
         space[name] = {}
 
-    space['RandomForest']['n_estimators'] = [10, 100, 500]
-    space['RandomForest']['max_features'] = [2, 4, 6]
+    space['RandomForest']['n_estimators'] = [10, 50, 100, 200, 500]
+    space['RandomForest']['max_features'] = [2, 4, 6, 8]
     space['SVC']['kernel'] = ['rbf', 'linear']
+    space['SVC']['C'] = [1,10,100,1000]
+    space['SVC']['gamma'] = [1,0.1,0.001]
     space['DecisionTree']['criterion'] = ['entropy', 'gini']
-    space['LogisticRegression']['random_state'] = [0]
+    space['DecisionTree']['max_depth'] = [5, 10, 15, 20]
+    space['DecisionTree']['max_leaf_nodes'] = [5, 10, 20, 30, 40]
+    space['LogisticRegression']['penalty'] = ['none', 'l1', 'l2', 'elasticnet']
+    space['LogisticRegression']['C'] = [1e-5, 1e-3, 1e-1, 10, 100]
+    space['LogisticRegression']['solver'] = ['newton-cg', 'lbfgs', 'liblinear']
     
     results = []
     names = []
     for (name, model) in models:
         grid = space[name]
-        cv_inner = KFold(n_splits=3, shuffle=True, random_state=1)
-        # define search
-        search = GridSearchCV(model, grid, scoring='f1_weighted', n_jobs=1, cv=cv_inner, refit=True)
         # configure the cross-validation procedure
         cv_outer = KFold(n_splits=10, shuffle=True, random_state=1)
-        # execute the nested cross-validation
-        scores = cross_val_score(search, X, y, scoring='f1_weighted', cv=cv_outer, n_jobs=-1)
-        # report performance
-        # print('F1-score: %.3f (%.3f)' % (mean(scores), std(scores)))
+        # enumerate splits
+        outer_results = list()
+        for train_ix, test_ix in cv_outer.split(X_transf):
+            # split data
+            X_train, X_test = X_transf[train_ix, :], X_transf[test_ix, :]
+            y_train, y_test = y[train_ix], y[test_ix]
 
-        result = mean(scores)
+            # configure the cross-validation procedure
+            cv_inner = KFold(n_splits=3, shuffle=True, random_state=1)
+
+            # define search
+            search = GridSearchCV(model, grid, scoring='f1_weighted', cv=cv_inner, refit=True)
+            # execute search
+            result = search.fit(X_train, y_train)
+            # get the best performing model fit on the whole training set
+            best_model = result.best_estimator_
+            # evaluate model on the hold out dataset
+            yhat = best_model.predict(X_test)
+            # evaluate the model
+            f1 = f1_score(y_test, yhat, average='weighted')
+            # store the result
+            outer_results.append(f1)
+            # report progress
+            print('>f1=%.3f, est=%.3f, cfg=%s' % (f1, result.best_score_, result.best_params_))
+            # summarize the estimated performance of the model
+
+        if ('DecisionTree' in name):
+            dot_data = StringIO()
+            tree.export_graphviz(best_model, out_file=dot_data,  
+                            filled=True, rounded=True,
+                            special_characters=True, feature_names = features,class_names=list(set(yhat)))
+            graph = pydotplus.graph_from_dot_data(dot_data.getvalue())  
+            graph.write_png('dec_tree' + score_metric + '_' + str(search_budget) + '.png')
+            Image(graph.create_png())
+
+        # print('F1-score: %.3f (%.3f)' % (mean(outer_results), std(outer_results)))
+
+        result = mean(outer_results)
         names.append(name)
         results.append(result)
 
-    for i in range(len(names)):
-        print(names[i],results[i].mean())
+    setting = score_metric + ' : ' + 'BUDGET ' + str(search_budget)
+    print(setting + ' :' + str(results))
 
+    results_dict = dict()
+
+    for i in range(len(names)):
+        results_dict[names[i]] = results[i].mean()
+
+    with open(score_metric + str(search_budget)  + '_' + str(k) + '_features'+ '.txt', 'w') as file:
+        file.write(json.dumps(results_dict)) 
+
+    return results
 
 if __name__ == '__main__':
-    run_KFold_Grid_all_models()
-    # auto_KFold()
-    # double_K_fold()
+    """
+    Uses auto KFold with Grid Search for selected models.
+    """
+    for k in [3, 5, 10, 15, 20, 49]:
+        # Branch coverage
+        for search_budget in [60, 180, 300]:
+            # Feature selection in CV
+            double_K_fold(search_budget, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-', k=k)
+            
+            # Feature selection before CV
+            # run_KFold_Grid_all_models(search_budget, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
+        
+        # Mutation score
+        # Feature selection in CV
+        double_K_fold(search_budget=60, columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv', k=k)
+    
+    # Feature selection before CV
+    # run_KFold_Grid_all_models(search_budget=60, columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
 
+
+    # KFold with no Grid Search
     # f1s_coverage = run_KFold(search_budgets=[60, 180, 300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
     # print( 'DT: ' + str(np.average(f1s_coverage[60][0])) + ' SVC: ' + str(np.average(f1s_coverage[60][1])) + ' RF: ' + str(np.average(f1s_coverage[60][2])) + ' LR: ' + str(np.average(f1s_coverage[60][3])))
     # print( 'DT: ' + str(np.average(f1s_coverage[180][0])) + ' SVC: ' + str(np.average(f1s_coverage[180][1])) + ' RF: ' + str(np.average(f1s_coverage[180][2])) + ' LR: ' + str(np.average(f1s_coverage[180][3])))
@@ -196,4 +214,3 @@ if __name__ == '__main__':
 
     # f1s_mutation_score = run_KFold(search_budgets=[60], columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
     # print( 'DT_mutation: ' + str(np.average(f1s_mutation_score[60][0])) + ' SVC_mutation: ' + str(np.average(f1s_mutation_score[60][1])) + ' RF: ' + str(np.average(f1s_mutation_score[60][2])) + ' LR: ' + str(np.average(f1s_mutation_score[60][3])))
-
