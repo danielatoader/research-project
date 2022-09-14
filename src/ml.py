@@ -1,160 +1,216 @@
+from six import StringIO
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
+from IPython.display import Image  
+from sklearn.tree import export_graphviz
+import pydotplus
+import json
+from matplotlib import pyplot as plt
 import numpy as np
+import pandas as pd
 from sklearn import tree
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import f1_score
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
+from sklearn.ensemble import RandomForestClassifier
+import sklearn.feature_selection as fs
+from sklearn.feature_selection import RFECV
+from numpy import mean
 from sklearn.model_selection import KFold
-import math
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
 
-from ProcessEvoSuiteData import ProcessEvoSuiteData
-
-data = ProcessEvoSuiteData()
-
-labels_dict_gl = dict()
-labels_dict_gl[60] = {'branch_60':0, 'default_60':1, 'weak_60':2}
-labels_dict_gl[180] = {'branch_180':0, 'default_180':1, 'weak_180':2}
-labels_dict_gl[300] = {'branch_300':0, 'default_300':1, 'weak_300':2}
-
-how_many = 0
-
-def get_significant_classes_matching_metrics(search_budget):
-    """ Get significant classes and their corresponding matching metrics. """
-
-    significant_classes_stats = {}
-    key_budget = 'stats' + str(search_budget)
-
-    # Contains the coverage results per class from EvoSuite (e.g. coverage_res_filename = "res_data/results-60.csv")
-    coverage_res_filename = 'res_data/results-' + str(search_budget) + '.csv'
-
-    # Contains statistically significant classes at [0] and all classes at [1]
-    # res_dict['stats60'][0].items() contains pairs of type (class_name, p-value)
-    significant_classes_stats[str(key_budget + '_branch')] = data.get_significant_classes_stats(coverage_res_filename, search_budget, 'branch')
-    significant_classes_stats[str(key_budget + '_default')] = data.get_significant_classes_stats(coverage_res_filename, search_budget, 'default')
-
-    matching_classes_metrics = {}
-    signif_matched_metrics = {}
-    key_class_metrics = 'class_metrics' + str(search_budget)
-
-    # Contains the dictionary with matched metrics (for classes from EvoSuite output and CK tool)
-    # Should probably be reindexed (or ignore index)
-    matching_classes_metrics[key_class_metrics] = data.get_matching_classes_metrics(coverage_res_filename, search_budget)
-
-    # Contains names of statistically significant classes
-    significant_classes = list(set(list(significant_classes_stats[str(key_budget + '_branch')][0].keys()) + list(significant_classes_stats[str(key_budget + '_branch')][0].keys())))
-
-    # Matched metrics for the significant classes
-    matched_metrics = matching_classes_metrics[key_class_metrics]
-    signif_matched_metrics[key_class_metrics] = matched_metrics[matched_metrics.apply(lambda row : row['class'] in significant_classes, axis=1)]
-
-    return signif_matched_metrics
-
-def get_X_y(search_budget):
-    """ Gets the dataset and the taget labels to further train the ML models. """
-
-    metrics_budget = 'class_metrics' + str(search_budget)
-    signif_matched_metrics = get_significant_classes_matching_metrics(search_budget)
-    medians = data.calculate_medians(search_budget)[['TARGET_CLASS', 'configuration_id', 'BranchCoverage']]
-
-    X = []
-    classes = []
-
-    # Loop through class names
-    for cls in signif_matched_metrics[metrics_budget]['class'].items():
-        # Select only those classes for which all 3 configuration data points are available
-        if medians.loc[medians['TARGET_CLASS']==cls[1]].shape[0] != 3:
-            continue
-        X.append([])
-        
-        # Keep class names for later use
-        # We need them to determine the proper labels
-        classes.append(cls[1])
-        
-        # [2:] to skip the name and type
-        for feature in signif_matched_metrics[metrics_budget].keys()[2:]:
-            
-            # X[-1] is the last (current) entry (class)
-            # cls[0] is the id of the entry (class)
-            # dict[class_metrics60][feature][cls[0]] is the specific feature
-            # Of the current class
-            feat = signif_matched_metrics[metrics_budget][feature][cls[0]]
-            X[-1].append(feat if not math.isnan(feat) else 0)
-
-    # All features should have the same length
-    assert all(map(lambda x: len(x) == len(X[0]), X))
-
-    y = []
-    for cl in classes:
-        y.append(get_label(search_budget, cl, medians))
-    # y = list(map(get_label(classes)))
-    
-    # print(f"Non-unique maximums for {how_many} out of {len(X)} entries")
-    # print(y)
-    assert len(y) == len(X), f"X and y should have the same number of entries, but they have {len(X)} and {len(y)}, respectively."
-
-    return X, y
-
-def get_label(search_budget, class_name, medians, labels_dict=None):
-    if (not labels_dict):
-        labels_dict = labels_dict_gl[search_budget]
-
-    global how_many
-    # Get matching rows
-    selected_rows = medians.loc[medians['TARGET_CLASS']==class_name]
-    assert selected_rows.shape[0] == 3, f"Expected 3 selected rows, but got {selected_rows[0]}"
-    
-    # Get the maximum branch covreage of the three data points
-    max_coverage = selected_rows.max(numeric_only=True)['BranchCoverage']
-    
-    # Select the configuration_id by the maximum branch coverage
-    # TODO: decide on a policy for equality
-    # A lot of the datapoints have equal values, so this is an extremely important decision
-    # Currently: just pick the last one
-    max_rows = selected_rows.loc[selected_rows['BranchCoverage']==max_coverage]
-    
-    # Count the number of labels that have non-unique maximums
-    if max_rows.shape[0] > 1:
-        how_many += 1
-        
-    # Select the first row of the maximum ones
-    max_config_id = max_rows.iloc[-1]['configuration_id']
-    
-    assert max_config_id in labels_dict, f"Expected configuration id to be one of {labels_dict.keys()}, but got {max_config_id}"
-    return labels_dict[max_config_id]
+from feature_selection_extraction import select_features
+from make_dataset import get_X_y, get_balanced_X_y
 
 
-def run_KFold(search_budgets):
-    """ Run KFold cross validation using X, y and the chosen models. """
+def run_KFold(search_budgets=[60,180,300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-'):
+    """
+    Run KFold cross validation using X, y, and the chosen models.
+    """
 
     f1s = dict()
     for search_budget in search_budgets:
-        X, y = get_X_y(search_budget)
-        X = np.array(X)
-        y = np.array(y)
 
-        kf = KFold(n_splits=20, random_state=42, shuffle=True)
-        f1s_dt = []
+        # Get samples and their labels
+        # Also balance data
+        X_res, y_res, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
+
+        # bk = fs.SelectKBest()
+        # bk.fit(X_res, y_res)
+        # X_transf = bk.transform(X_res)
+
+        kf = KFold(n_splits=10, random_state=42, shuffle=True)
         f1s_svc = []
-        for train_index, test_index in kf.split(X):
+        f1s_dt = []
+        f1s_rf = []
+        f1s_lr = []
+
+        for train_index, test_index in kf.split(X_res):
             # Split the data
-            X_train, X_test = X[train_index], X[test_index]
-            y_train, y_test = y[train_index], y[test_index]
+            X_train, X_test = X_res[train_index], X_res[test_index]
+            y_train, y_test = y_res[train_index], y_res[test_index]            
+
+            # Feature selection
+            # X_train, X_test, selected_features = select_features(X_train, X_test, features)
             
-            # Train svc
+            # Train SVC
             clf = SVC()
             clf.set_params(kernel='rbf').fit(X_train, y_train)
             y_pred = clf.predict(X_test)
-            f1s_svc.append(f1_score(y_pred, y_test, average='weighted'))
+            f1s_svc.append(f1_score(y_test, y_pred, average='weighted'))
             
-            # Train decision tree
-            decision_tree = tree.DecisionTreeClassifier(random_state=456).fit(X_train, y_train)
+            # Train Decision Tree
+            decision_tree = tree.DecisionTreeClassifier(criterion="entropy", max_depth=15).fit(X_train, y_train)
             y_pred = decision_tree.predict(X_test)
-            f1s_dt.append(f1_score(y_pred, y_test, average='weighted'))
+            f1s_dt.append(f1_score(y_test, y_pred, average='weighted'))
+            tree.plot_tree(decision_tree)
 
-        f1s[search_budget] = (f1s_dt, f1s_svc)
+            # Train Random Forest classifier
+            random_forest = RandomForestClassifier(n_estimators = 100).fit(X_train, y_train)
+            y_pred = random_forest.predict(X_test)
+            f1s_rf.append(f1_score(y_test, y_pred, average='weighted'))
+
+            # Train a Logistic Regression classifier
+            logistic_regression = LogisticRegression(random_state=0, max_iter=300).fit(X_train, y_train)
+            y_pred = logistic_regression.predict(X_test)
+            f1s_lr.append(f1_score(y_test, y_pred, average='weighted'))
+
+        f1s[search_budget] = (f1s_dt, f1s_svc, f1s_rf, f1s_lr)
 
     return f1s
 
+def double_K_fold(
+    search_budget=60,
+    columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'],
+    score_metric='BranchCoverage',
+    score_metric_filename='res_data/results-',
+    k=10
+):
+    models = []
+
+    models.append(("RandomForest",RandomForestClassifier()))
+    models.append(("SVC",SVC()))
+    models.append(("DecisionTree",tree.DecisionTreeClassifier()))
+    models.append(("LogisticRegression",LogisticRegression()))
+    # models.append(("LinearSVC",LinearSVC()))
+    # models.append(("KNeighbors",KNeighborsClassifier()))
+
+    # create dataset
+    X, y, features = get_balanced_X_y(search_budget, columns_to_group, score_metric, score_metric_filename, labels_dict=None)
+    
+    # Feature selection
+    bk = fs.SelectKBest(k=k)
+    bk.fit(X, y)
+    X_transf = bk.transform(X)
+    features = [column[0]  for column in zip(features,bk.get_support()) if column[1]]
+    print(features)
+    # features = bk.get_support(indices=True)
+    
+    space = dict()
+    for (name, model) in models:
+        space[name] = {}
+
+    space['RandomForest']['n_estimators'] = [10, 50, 100, 200, 500]
+    space['RandomForest']['max_features'] = [2, 4, 6, 8]
+    space['SVC']['kernel'] = ['rbf', 'linear']
+    space['SVC']['C'] = [1,10,100,1000]
+    space['SVC']['gamma'] = [1,0.1,0.001]
+    space['DecisionTree']['criterion'] = ['entropy', 'gini']
+    space['DecisionTree']['max_depth'] = [5, 10, 15, 20]
+    space['DecisionTree']['max_leaf_nodes'] = [5, 10, 20, 30, 40]
+    space['LogisticRegression']['penalty'] = ['none', 'l1', 'l2', 'elasticnet']
+    space['LogisticRegression']['C'] = [1e-5, 1e-3, 1e-1, 10, 100]
+    space['LogisticRegression']['solver'] = ['newton-cg', 'lbfgs', 'liblinear']
+    
+    results = []
+    names = []
+    for (name, model) in models:
+        grid = space[name]
+        # configure the cross-validation procedure
+        cv_outer = KFold(n_splits=10, shuffle=True, random_state=1)
+        # enumerate splits
+        outer_results = list()
+        for train_ix, test_ix in cv_outer.split(X_transf):
+            # split data
+            X_train, X_test = X_transf[train_ix, :], X_transf[test_ix, :]
+            y_train, y_test = y[train_ix], y[test_ix]
+
+            # configure the cross-validation procedure
+            cv_inner = KFold(n_splits=3, shuffle=True, random_state=1)
+
+            # define search
+            search = GridSearchCV(model, grid, scoring='f1_weighted', cv=cv_inner, refit=True)
+            # execute search
+            result = search.fit(X_train, y_train)
+            # get the best performing model fit on the whole training set
+            best_model = result.best_estimator_
+            # evaluate model on the hold out dataset
+            yhat = best_model.predict(X_test)
+            # evaluate the model
+            f1 = f1_score(y_test, yhat, average='weighted')
+            # store the result
+            outer_results.append(f1)
+            # report progress
+            print('>f1=%.3f, est=%.3f, cfg=%s' % (f1, result.best_score_, result.best_params_))
+            # summarize the estimated performance of the model
+
+        if ('DecisionTree' in name):
+            dot_data = StringIO()
+            tree.export_graphviz(best_model, out_file=dot_data,  
+                            filled=True, rounded=True,
+                            special_characters=True, feature_names = features,class_names=list(set(yhat)))
+            graph = pydotplus.graph_from_dot_data(dot_data.getvalue())  
+            graph.write_png('dec_tree' + score_metric + '_' + str(search_budget) + '.png')
+            Image(graph.create_png())
+
+        # print('F1-score: %.3f (%.3f)' % (mean(outer_results), std(outer_results)))
+
+        result = mean(outer_results)
+        names.append(name)
+        results.append(result)
+
+    setting = score_metric + ' : ' + 'BUDGET ' + str(search_budget)
+    print(setting + ' :' + str(results))
+
+    results_dict = dict()
+
+    for i in range(len(names)):
+        results_dict[names[i]] = results[i].mean()
+
+    with open(score_metric + str(search_budget)  + '_' + str(k) + '_features'+ '.txt', 'w') as file:
+        file.write(json.dumps(results_dict)) 
+
+    return results
+
 if __name__ == '__main__':
-    f1s = run_KFold([60, 180, 300])
-    print( 'DT: ' + str(np.average(f1s[60][0])) + ' SVC: ' + str(np.average(f1s[60][1])))
-    print( 'DT: ' + str(np.average(f1s[180][0])) + ' SVC: ' + str(np.average(f1s[180][1])))
-    print( 'DT: ' + str(np.average(f1s[300][0])) + ' SVC: ' + str(np.average(f1s[300][1])))
+    """
+    Uses auto KFold with Grid Search for selected models.
+    """
+    for k in [3, 5, 10, 15, 20, 49]:
+        # Branch coverage
+        for search_budget in [60, 180, 300]:
+            # Feature selection in CV
+            double_K_fold(search_budget, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-', k=k)
+            
+            # Feature selection before CV
+            # run_KFold_Grid_all_models(search_budget, columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
+        
+        # Mutation score
+        # Feature selection in CV
+        double_K_fold(search_budget=60, columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv', k=k)
+    
+    # Feature selection before CV
+    # run_KFold_Grid_all_models(search_budget=60, columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
+
+
+    # KFold with no Grid Search
+    # f1s_coverage = run_KFold(search_budgets=[60, 180, 300], columns_to_group=['TARGET_CLASS', 'configuration_id', 'project.id'], score_metric='BranchCoverage', score_metric_filename='res_data/results-')
+    # print( 'DT: ' + str(np.average(f1s_coverage[60][0])) + ' SVC: ' + str(np.average(f1s_coverage[60][1])) + ' RF: ' + str(np.average(f1s_coverage[60][2])) + ' LR: ' + str(np.average(f1s_coverage[60][3])))
+    # print( 'DT: ' + str(np.average(f1s_coverage[180][0])) + ' SVC: ' + str(np.average(f1s_coverage[180][1])) + ' RF: ' + str(np.average(f1s_coverage[180][2])) + ' LR: ' + str(np.average(f1s_coverage[180][3])))
+    # print( 'DT: ' + str(np.average(f1s_coverage[300][0])) + ' SVC: ' + str(np.average(f1s_coverage[300][1])) + ' RF: ' + str(np.average(f1s_coverage[300][2])) + ' LR: ' + str(np.average(f1s_coverage[300][3])))
+
+    # f1s_mutation_score = run_KFold(search_budgets=[60], columns_to_group=['class', 'configuration', 'project'], score_metric='mutation_score_percent', score_metric_filename='res_data/mutation_scores.csv')
+    # print( 'DT_mutation: ' + str(np.average(f1s_mutation_score[60][0])) + ' SVC_mutation: ' + str(np.average(f1s_mutation_score[60][1])) + ' RF: ' + str(np.average(f1s_mutation_score[60][2])) + ' LR: ' + str(np.average(f1s_mutation_score[60][3])))

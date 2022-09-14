@@ -1,4 +1,4 @@
-from ProcessEvoSuiteData import ProcessEvoSuiteData
+from process_evosuite_data import ProcessEvoSuiteData
 
 def plot_significant_classes():
     data = ProcessEvoSuiteData()
